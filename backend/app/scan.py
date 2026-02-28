@@ -1,18 +1,22 @@
 from __future__ import annotations
+import io
 import json
 import uuid
 from pathlib import Path
 from typing import List, Dict
+
+import httpx
 import pandas as pd
-import yfinance as yf
 from ta.trend import SMAIndicator, MACD
 from ta.momentum import RSIIndicator
 from ta.volatility import AverageTrueRange
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 from .scoring import score_candidate, compute_plan
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
 NASDAQ100_PATH = DATA_DIR / "nasdaq100.json"
+
 
 def load_nasdaq100() -> List[str]:
     if NASDAQ100_PATH.exists():
@@ -23,15 +27,32 @@ def load_nasdaq100() -> List[str]:
         "NFLX","COST","PEP","ADBE","CSCO","QCOM","TXN","INTU","AMAT","PYPL",
     ]
 
+
 NASDAQ_100 = load_nasdaq100()
 
-def fetch_ohlcv(ticker: str, period: str = "6mo", interval: str = "1d") -> pd.DataFrame:
-    df = yf.download(ticker, period=period, interval=interval, auto_adjust=True, progress=False)
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=6))
+def fetch_ohlcv(ticker: str) -> pd.DataFrame:
+    """
+    Fetch daily OHLCV from Stooq (no key). Tickers are like AAPL -> aapl.us
+    """
+    symbol = f"{ticker.lower()}.us"
+    url = f"https://stooq.com/q/d/l/?s={symbol}&i=d"
+
+    r = httpx.get(url, timeout=20)
+    r.raise_for_status()
+
+    df = pd.read_csv(io.StringIO(r.text))
     if df is None or df.empty:
         return pd.DataFrame()
-    df = df.reset_index()
-    # standardize columns
-    df.columns = [c.lower().replace(" ", "_") for c in df.columns]
+
+    # Stooq columns: Date, Open, High, Low, Close, Volume
+    df.columns = [c.lower() for c in df.columns]
+    df = df.rename(columns={"date": "date"})
+    # Ensure numeric
+    for c in ["open", "high", "low", "close", "volume"]:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    df = df.dropna(subset=["close", "high", "low", "open"])
     return df
 
 def compute_features(df: pd.DataFrame) -> Dict[str, float]:
@@ -105,6 +126,16 @@ def scan_universe(universe: str, risk_dollars: float, top_n: int = 3) -> dict:
             },
             "plan": plan
         })
+
+    if not rows:
+        return {
+            "run_id": str(uuid.uuid4()),
+            "top": [],
+            "top10": [],
+            "universe_size": len(tickers),
+            "scanned": 0,
+            "error": "No data fetched (data provider blocked or rate-limited).",
+        }
 
     rows.sort(key=lambda x: x["score"], reverse=True)
     run_id = str(uuid.uuid4())

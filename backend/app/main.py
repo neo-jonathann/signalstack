@@ -86,6 +86,7 @@ async def scan(req: ScanRequest):
             "universe_size": base["universe_size"],
             "scanned": base["scanned"],
             "include_headlines": req.include_headlines,
+            "error": base.get("error"),
         }
     )
 
