@@ -1,18 +1,17 @@
 from __future__ import annotations
-import io
+import asyncio
 import json
 import uuid
 from pathlib import Path
 from typing import List, Dict
 
-import httpx
 import pandas as pd
 from ta.trend import SMAIndicator, MACD
 from ta.momentum import RSIIndicator
 from ta.volatility import AverageTrueRange
-from tenacity import retry, stop_after_attempt, wait_exponential
 
 from .scoring import score_candidate, compute_plan
+from .yahoo_ohlcv import fetch_ohlcv_yahoo_via_proxy
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
 NASDAQ100_PATH = DATA_DIR / "nasdaq100.json"
@@ -31,29 +30,8 @@ def load_nasdaq100() -> List[str]:
 NASDAQ_100 = load_nasdaq100()
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=6))
-def fetch_ohlcv(ticker: str) -> pd.DataFrame:
-    """
-    Fetch daily OHLCV from Stooq (no key). Tickers are like AAPL -> aapl.us
-    """
-    symbol = f"{ticker.lower()}.us"
-    url = f"https://stooq.com/q/d/l/?s={symbol}&i=d"
-
-    r = httpx.get(url, timeout=20)
-    r.raise_for_status()
-
-    df = pd.read_csv(io.StringIO(r.text))
-    if df is None or df.empty:
-        return pd.DataFrame()
-
-    # Stooq columns: Date, Open, High, Low, Close, Volume
-    df.columns = [c.lower() for c in df.columns]
-    df = df.rename(columns={"date": "date"})
-    # Ensure numeric
-    for c in ["open", "high", "low", "close", "volume"]:
-        df[c] = pd.to_numeric(df[c], errors="coerce")
-    df = df.dropna(subset=["close", "high", "low", "open"])
-    return df
+async def fetch_ohlcv(ticker: str) -> pd.DataFrame:
+    return await fetch_ohlcv_yahoo_via_proxy(ticker, range_="6mo", interval="1d")
 
 def compute_features(df: pd.DataFrame) -> Dict[str, float]:
     """
@@ -93,12 +71,24 @@ def compute_features(df: pd.DataFrame) -> Dict[str, float]:
         "atrp": float(atrp),
     }
 
-def scan_universe(universe: str, risk_dollars: float, top_n: int = 3) -> dict:
+
+async def scan_universe(universe: str, risk_dollars: float, top_n: int = 3) -> dict:
     tickers = NASDAQ_100 if universe == "nasdaq100" else NASDAQ_100
 
+    sem = asyncio.Semaphore(8)
+
+    async def fetch_one(t: str):
+        async with sem:
+            try:
+                df = await fetch_ohlcv(t)
+                return t, df
+            except Exception:
+                return t, pd.DataFrame()
+
+    fetched = await asyncio.gather(*[fetch_one(t) for t in tickers])
+
     rows = []
-    for t in tickers:
-        df = fetch_ohlcv(t)
+    for t, df in fetched:
         if df.empty or len(df) < 60:
             continue
         feat = compute_features(df)
@@ -110,22 +100,24 @@ def scan_universe(universe: str, risk_dollars: float, top_n: int = 3) -> dict:
         score, breakdown = score_candidate(feat)
         plan = compute_plan(price=feat["close"], atr=feat["atr14"], risk_dollars=risk_dollars)
 
-        rows.append({
-            "ticker": t,
-            "score": score,
-            "breakdown": breakdown,
-            "indicators": {
-                "close": round(feat["close"], 2),
-                "sma50": round(feat["sma50"], 2),
-                "sma200": round(feat["sma200"], 2),
-                "rsi14": round(feat["rsi14"], 2),
-                "macd_hist": round(feat["macd_hist"], 4),
-                "atr14": round(feat["atr14"], 2),
-                "vol_ratio": round(feat["vol_ratio"], 2),
-                "atrp": round(feat["atrp"], 4),
-            },
-            "plan": plan
-        })
+        rows.append(
+            {
+                "ticker": t,
+                "score": score,
+                "breakdown": breakdown,
+                "indicators": {
+                    "close": round(feat["close"], 2),
+                    "sma50": round(feat["sma50"], 2),
+                    "sma200": round(feat["sma200"], 2),
+                    "rsi14": round(feat["rsi14"], 2),
+                    "macd_hist": round(feat["macd_hist"], 4),
+                    "atr14": round(feat["atr14"], 2),
+                    "vol_ratio": round(feat["vol_ratio"], 2),
+                    "atrp": round(feat["atrp"], 4),
+                },
+                "plan": plan,
+            }
+        )
 
     if not rows:
         return {
@@ -141,7 +133,7 @@ def scan_universe(universe: str, risk_dollars: float, top_n: int = 3) -> dict:
     run_id = str(uuid.uuid4())
     return {
         "run_id": run_id,
-        "top": rows[:max(1, top_n)],
+        "top": rows[: max(1, top_n)],
         "top10": rows[:10],
         "universe_size": len(tickers),
         "scanned": len(rows),

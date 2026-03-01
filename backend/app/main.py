@@ -28,7 +28,7 @@ def health():
 
 @app.post("/api/scan", response_model=ScanResponse)
 async def scan(req: ScanRequest):
-    base = scan_universe(req.universe, req.risk_dollars, top_n=req.top_n)
+    base = await scan_universe(req.universe, req.risk_dollars, top_n=req.top_n)
 
     rows = base["top"]
 
