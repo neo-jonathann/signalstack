@@ -37,10 +37,18 @@ async def fetch_serp_html(query: str) -> str:
         "Authorization": f"Bearer {BRIGHTDATA_API_KEY}",
         "Content-Type": "application/json",
     }
-    async with httpx.AsyncClient(timeout=30) as client:
-        r = await client.post("https://api.brightdata.com/request", json=payload, headers=headers)
-        r.raise_for_status()
-        return r.text
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.post(
+                "https://api.brightdata.com/request",
+                json=payload,
+                headers=headers,
+            )
+            r.raise_for_status()
+            return r.text
+    except Exception as e:
+        print("BRIGHTDATA FAIL", query, repr(e))
+        return ""
 
 def parse_google_headlines(html: str, limit: int = 5) -> List[dict]:
     if not html:

@@ -16,6 +16,9 @@ from .yahoo_ohlcv import fetch_ohlcv_yahoo_via_proxy
 DATA_DIR = Path(__file__).resolve().parent / "data"
 NASDAQ100_PATH = DATA_DIR / "nasdaq100.json"
 
+MAX_TICKERS_PER_SCAN = 30
+CONCURRENCY = 6
+
 
 def load_nasdaq100() -> List[str]:
     if NASDAQ100_PATH.exists():
@@ -73,23 +76,25 @@ def compute_features(df: pd.DataFrame) -> Dict[str, float]:
 
 
 async def scan_universe(universe: str, risk_dollars: float, top_n: int = 3) -> dict:
-    tickers = NASDAQ_100 if universe == "nasdaq100" else NASDAQ_100
+    base_universe = NASDAQ_100 if universe == "nasdaq100" else NASDAQ_100
+    tickers = base_universe[:MAX_TICKERS_PER_SCAN]
 
-    sem = asyncio.Semaphore(8)
+    sem = asyncio.Semaphore(CONCURRENCY)
 
     async def fetch_one(t: str):
         async with sem:
             try:
                 df = await fetch_ohlcv(t)
                 return t, df
-            except Exception:
-                return t, pd.DataFrame()
+            except Exception as e:
+                print("FETCH FAIL", t, repr(e))
+                return t, None
 
     fetched = await asyncio.gather(*[fetch_one(t) for t in tickers])
 
     rows = []
     for t, df in fetched:
-        if df.empty or len(df) < 60:
+        if df is None or df.empty or len(df) < 60:
             continue
         feat = compute_features(df)
 
