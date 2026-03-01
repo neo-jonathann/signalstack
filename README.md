@@ -34,5 +34,5 @@ docker run -p 8000:8000 signalstack
 
 MIT
 
-##Host 
+## Host 
 Hosted on Zeabur - https://fullstack-app.zeabur.app/ 
