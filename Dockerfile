@@ -28,4 +28,4 @@ ENV PYTHONPATH=/app/backend
 # Zeabur will set PORT; fallback for local docker
 ENV PORT=8080
 
-CMD ["sh", "-c", "uvicorn backend.app.main:app --host 0.0.0.0 --port ${PORT} --log-level debug --access-log"]
+CMD ["sh", "-c", "uvicorn backend.app.main:app --host 0.0.0.0 --port ${PORT:-8080} --log-level debug --access-log"]
