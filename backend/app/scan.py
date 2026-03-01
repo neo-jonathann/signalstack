@@ -34,7 +34,7 @@ NASDAQ_100 = load_nasdaq100()
 
 
 async def fetch_ohlcv(ticker: str) -> pd.DataFrame:
-    return await fetch_ohlcv_yahoo_via_proxy(ticker, range_="6mo", interval="1d")
+    return await fetch_ohlcv_yahoo_via_proxy(ticker, range_="2y", interval="1d")
 
 def compute_features(df: pd.DataFrame) -> Dict[str, float]:
     """
@@ -94,7 +94,7 @@ async def scan_universe(universe: str, risk_dollars: float, top_n: int = 3) -> d
 
     rows = []
     for t, df in fetched:
-        if df is None or df.empty or len(df) < 60:
+        if df is None or df.empty or len(df) < 210:
             continue
         feat = compute_features(df)
 
