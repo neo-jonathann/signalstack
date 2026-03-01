@@ -1,7 +1,8 @@
 from __future__ import annotations
 import asyncio
 import os
-from fastapi import FastAPI
+import traceback
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -28,67 +29,74 @@ def health():
 
 @app.post("/api/scan", response_model=ScanResponse)
 async def scan(req: ScanRequest):
-    base = await scan_universe(req.universe, req.risk_dollars, top_n=req.top_n)
+    try:
+        base = await scan_universe(req.universe, req.risk_dollars, top_n=req.top_n)
 
-    rows = base["top"]
+        rows = base["top"]
 
-    headlines_map = {}
-    if req.include_headlines:
-        tickers = [r["ticker"] for r in rows]
-        results = await asyncio.gather(
-            *[get_headlines_for_ticker(t, limit=3) for t in tickers],
-            return_exceptions=True
+        headlines_map = {}
+        if req.include_headlines:
+            tickers = [r["ticker"] for r in rows]
+            results = await asyncio.gather(
+                *[get_headlines_for_ticker(t, limit=3) for t in tickers],
+                return_exceptions=True,
+            )
+            for t, res in zip(tickers, results):
+                if isinstance(res, Exception):
+                    headlines_map[t] = []
+                else:
+                    headlines_map[t] = res
+
+        candidates = []
+        for row in rows:
+            hl = headlines_map.get(row["ticker"], [])
+            headlines = [Headline(**h) for h in hl]
+
+            reason_bullets = []
+            risk_note = None
+
+            if req.include_reasoning:
+                llm_payload = {
+                    "ticker": row["ticker"],
+                    "score": row["score"],
+                    "score_breakdown": row["breakdown"],
+                    "indicators": row["indicators"],
+                    "plan": row["plan"],
+                    "headlines": hl,
+                }
+                explained = await explain_pick(llm_payload)
+                reason_bullets = explained.get("bullets", [])[:3]
+                risk_note = explained.get("risk", None)
+
+            candidates.append(
+                Candidate(
+                    ticker=row["ticker"],
+                    score=row["score"],
+                    score_breakdown=row["breakdown"],
+                    indicators=row["indicators"],
+                    plan=TradePlan(**row["plan"]),
+                    headlines=headlines,
+                    reasoning=None,
+                    reason_bullets=reason_bullets,
+                    risk_note=risk_note,
+                )
+            )
+
+        return ScanResponse(
+            run_id=base["run_id"],
+            candidates=candidates,
+            meta={
+                "universe": req.universe,
+                "universe_size": base["universe_size"],
+                "scanned": base["scanned"],
+                "include_headlines": req.include_headlines,
+                "error": base.get("error"),
+            },
         )
-        for t, res in zip(tickers, results):
-            if isinstance(res, Exception):
-                headlines_map[t] = []
-            else:
-                headlines_map[t] = res
-
-    candidates = []
-    for row in rows:
-        hl = headlines_map.get(row["ticker"], [])
-        headlines = [Headline(**h) for h in hl]
-
-        reason_bullets = []
-        risk_note = None
-
-        if req.include_reasoning:
-            llm_payload = {
-                "ticker": row["ticker"],
-                "score": row["score"],
-                "score_breakdown": row["breakdown"],
-                "indicators": row["indicators"],
-                "plan": row["plan"],
-                "headlines": hl
-            }
-            explained = await explain_pick(llm_payload)
-            reason_bullets = explained.get("bullets", [])[:3]
-            risk_note = explained.get("risk", None)
-
-        candidates.append(Candidate(
-            ticker=row["ticker"],
-            score=row["score"],
-            score_breakdown=row["breakdown"],
-            indicators=row["indicators"],
-            plan=TradePlan(**row["plan"]),
-            headlines=headlines,
-            reasoning=None,
-            reason_bullets=reason_bullets,
-            risk_note=risk_note,
-        ))
-
-    return ScanResponse(
-        run_id=base["run_id"],
-        candidates=candidates,
-        meta={
-            "universe": req.universe,
-            "universe_size": base["universe_size"],
-            "scanned": base["scanned"],
-            "include_headlines": req.include_headlines,
-            "error": base.get("error"),
-        }
-    )
+    except Exception as e:
+        print("SCAN ERROR:", repr(e))
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ---- Serve frontend (built Vite) from /frontend/dist via Docker build ----
 FRONTEND_DIST = os.getenv("FRONTEND_DIST", "/app/frontend/dist")
