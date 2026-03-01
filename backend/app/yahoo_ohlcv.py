@@ -1,4 +1,5 @@
 import os
+import urllib.parse
 import httpx
 import pandas as pd
 
@@ -24,6 +25,10 @@ async def fetch_ohlcv_yahoo_via_proxy(
     interval: str = "1d",
 ) -> pd.DataFrame:
     proxy = _proxy_url()
+    print("YAHOO PROXY:", "ON" if proxy else "OFF")
+    if proxy:
+        u = urllib.parse.urlparse(proxy)
+        print("YAHOO PROXY HOST:", u.hostname, "PORT:", u.port, "USER:", u.username)
     url = _yahoo_chart_url(ticker, range_, interval)
 
     headers = {
@@ -37,9 +42,11 @@ async def fetch_ohlcv_yahoo_via_proxy(
         "Accept-Language": "en-US,en;q=0.9",
     }
 
+    proxies = {"http://": proxy, "https://": proxy} if proxy else None
+
     async with httpx.AsyncClient(
         timeout=30,
-        proxies=proxy,
+        proxies=proxies,
         verify=False,
         follow_redirects=True,
         headers=headers,
