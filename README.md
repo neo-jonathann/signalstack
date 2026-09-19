@@ -35,4 +35,4 @@ docker run -p 8000:8000 signalstack
 MIT
 
 ## Host 
-Hosted on Zeabur - https://fullstack-app.zeabur.app/ 
+Hosted on Vercel - https://signalstack-topaz.vercel.app/
